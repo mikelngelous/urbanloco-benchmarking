@@ -1,0 +1,57 @@
+# ROS Bag Playback Configuration for Testing
+
+rosbag_playback:
+  # Source rosbag file path (relative to launch directory)
+  bag_file: "$(find robot_communication)/../../../datasets/CA/CA-20190828190411_blur_align-005.bag"
+  
+  # Playback settings
+  rate: 1.0  # 1.0 = real-time, 0.5 = half speed, 2.0 = double speed
+  start_time: 0.0  # seconds from beginning
+  duration: 0.0  # 0 = full bag
+  loop: false
+  immediate: false
+  keep_alive: true
+  
+  # Topic remapping for testing
+  topic_remappings:
+    # Map UrbanLoco topics to our system topics if needed
+    # "/rslidar_points": "/lidar/points"
+    # "/imu_raw": "/sensors/imu"
+  
+  # Specific topics to play (empty = all topics)
+  topics: []
+    # Uncomment to play only specific topics:
+    # - "/rslidar_points"
+    # - "/imu_raw"
+    # - "/ublox_gps_node/fix"
+    # - "/camera_array/cam0/image_raw/compressed"
+    
+  # Skip topics (for testing with reduced load)
+  skip_topics: []
+    # Uncomment to skip heavy topics for testing:
+    # - "/camera_array/cam1/image_raw/compressed"
+    # - "/camera_array/cam2/image_raw/compressed" 
+    # - "/camera_array/cam3/image_raw/compressed"
+    # - "/camera_array/cam4/image_raw/compressed"
+    # - "/camera_array/cam5/image_raw/compressed"
+
+# Alternative test datasets
+test_datasets:
+  # Small dataset for quick tests
+  small_test:
+    bag_file: "$(find robot_communication)/../../../datasets/CA/CA-20190828184706_blur_align-002.bag"
+    rate: 2.0
+    duration: 60.0  # Only play first 60 seconds
+    
+  # Full dataset for performance testing
+  full_test:
+    bag_file: "$(find robot_communication)/../../../datasets/CA/CA-20190828151211_blur_align-006.bag"
+    rate: 1.0
+    loop: true
+    
+# Data analysis settings
+analysis:
+  output_directory: "/tmp/robot_communication_analysis"
+  save_statistics: true
+  generate_plots: true
+  export_format: ["json", "csv"]

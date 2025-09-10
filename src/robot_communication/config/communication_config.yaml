@@ -1,0 +1,107 @@
+# Robot Communication System Configuration
+
+# Synchronization Settings (NEW - HybridSynchronizer)
+synchronization:
+  message_filters:
+    queue_size: 10
+    max_interval_duration: 0.05  # 50ms max window
+    age_penalty: 0.1             # Prefer recent messages
+    
+  bandwidth_management:
+    enabled: true
+    threshold: 0.90              # Start dropping at 90% bandwidth
+    max_bandwidth_mbps: 400.0    # Network capacity (adjust based on tests)
+    
+  sensor_priorities:
+    lidar: "critical"            # Never drop
+    imu: "critical"              # Never drop
+    gnss: "medium"               # Can drop if needed
+    camera_front: "high"         # cam0 - front facing (important)
+    camera_left: "medium"        # cam1 - side view
+    camera_right: "medium"       # cam2 - side view  
+    camera_rear: "low"           # cam3 - rear view (drop first)
+    camera_up: "low"             # cam4 - up view
+    camera_down: "low"           # cam5 - down view
+    
+  monitoring:
+    enabled: true
+    metrics_publish_rate: 1.0    # Hz
+
+# Communication Manager Settings
+communication:
+  server:
+    host: "localhost"
+    port: 8080
+    timeout_ms: 5000
+    
+  performance:
+    send_buffer_size_mb: 1.0
+    receive_buffer_size_kb: 64
+    heartbeat_interval_ms: 1000
+    reconnect_interval_ms: 5000
+    max_reconnect_attempts: 10
+    
+  compression:
+    enabled: true
+    threshold: 0.8  # Compress if ratio > 0.8
+    algorithm: "lz4"  # lz4, zstd, none
+    
+  adaptive_qos:
+    enabled: true
+    target_bandwidth_mbps: 100.0
+    congestion_threshold: 0.85
+    priority_based_dropping: true
+
+# Sensor Subscriber Settings  
+sensor_subscriber:
+  threading:
+    thread_pool_size: 4
+    fusion_rate_hz: 100
+    
+  buffers:
+    lidar_buffer_size: 100
+    imu_buffer_size: 500
+    gnss_buffer_size: 100
+    camera_buffer_size: 200
+    
+  synchronization:
+    time_tolerance_ms: 50
+    max_age_ms: 200
+    interpolation_enabled: true
+
+# ROS Topics Configuration (UrbanLoco Format)
+ros_topics:
+  lidar: "/rslidar_points"
+  imu: "/imu_raw" 
+  gnss: "/ublox_gps_node/fix"
+  cameras:
+    - "/camera_array/cam0/image_raw/compressed"
+    - "/camera_array/cam1/image_raw/compressed"
+    - "/camera_array/cam2/image_raw/compressed"
+    - "/camera_array/cam3/image_raw/compressed"
+    - "/camera_array/cam4/image_raw/compressed"
+    - "/camera_array/cam5/image_raw/compressed"
+
+# Performance Monitoring
+monitoring:
+  enabled: true
+  stats_publish_rate_hz: 1.0
+  log_level: "INFO"  # DEBUG, INFO, WARN, ERROR
+  metrics_topic: "/robot_communication/metrics"
+  
+# Data Processing
+data_processing:
+  enable_data_validation: true
+  timestamp_synchronization: true
+  message_filtering: true
+  quality_control:
+    min_lidar_points: 1000
+    max_imu_acceleration_g: 10.0
+    max_camera_compression_ratio: 0.1
+
+# System Limits
+limits:
+  max_message_size_mb: 2.0
+  max_queue_size: 1000
+  memory_limit_mb: 512
+  cpu_limit_percent: 80.0

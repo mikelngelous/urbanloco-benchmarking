@@ -1,0 +1,122 @@
+syntax = "proto3";
+
+package robot_communication;
+
+import "google/protobuf/timestamp.proto";
+
+// High-performance sensor data packet for robot-server communication
+message SensorDataPacket {
+  // Packet metadata
+  uint64 sequence_id = 1;
+  google.protobuf.Timestamp timestamp = 2;
+  string frame_id = 3;
+  CompressionType compression = 4;
+  
+  // Sensor data payloads
+  LidarData lidar_data = 10;
+  ImuData imu_data = 11;
+  GnssData gnss_data = 12;
+  repeated CameraData camera_data = 13;
+  
+  enum CompressionType {
+    NONE = 0;
+    LZ4 = 1;
+    ZSTD = 2;
+  }
+}
+
+// LiDAR point cloud data
+message LidarData {
+  uint32 width = 1;
+  uint32 height = 2;
+  bool is_dense = 3;
+  bytes point_data = 4;  // Compressed if needed
+  uint32 point_step = 5;
+  uint32 row_step = 6;
+}
+
+// IMU sensor data
+message ImuData {
+  Vector3 linear_acceleration = 1;
+  Vector3 angular_velocity = 2;
+  Quaternion orientation = 3;
+  repeated double linear_acceleration_covariance = 4;  // 9 elements
+  repeated double angular_velocity_covariance = 5;     // 9 elements  
+  repeated double orientation_covariance = 6;          // 9 elements
+}
+
+// GNSS positioning data
+message GnssData {
+  double latitude = 1;
+  double longitude = 2;
+  double altitude = 3;
+  Vector3 position_covariance = 4;
+  uint32 status = 5;
+  uint32 service = 6;
+}
+
+// Camera image data
+message CameraData {
+  uint32 camera_id = 1;
+  uint32 width = 2;
+  uint32 height = 3;
+  string encoding = 4;
+  bool is_bigendian = 5;
+  uint32 step = 6;
+  bytes data = 7;  // Compressed image data
+}
+
+// Common geometric types
+message Vector3 {
+  double x = 1;
+  double y = 2;
+  double z = 3;
+}
+
+message Quaternion {
+  double x = 1;
+  double y = 2;
+  double z = 3;
+  double w = 4;
+}
+
+// Mission command from server to robot
+message MissionCommand {
+  uint64 command_id = 1;
+  google.protobuf.Timestamp timestamp = 2;
+  CommandType type = 3;
+  map<string, string> parameters = 4;
+  
+  enum CommandType {
+    UNKNOWN = 0;
+    START_RECORDING = 1;
+    STOP_RECORDING = 2;
+    CHANGE_FREQUENCY = 3;
+    SET_QOS = 4;
+    EMERGENCY_STOP = 5;
+  }
+}
+
+// Status feedback from robot to server
+message RobotStatus {
+  uint64 status_id = 1;
+  google.protobuf.Timestamp timestamp = 2;
+  SystemHealth health = 3;
+  PerformanceMetrics metrics = 4;
+  
+  message SystemHealth {
+    bool lidar_ok = 1;
+    bool imu_ok = 2;
+    bool gnss_ok = 3;
+    bool cameras_ok = 4;
+    bool communication_ok = 5;
+  }
+  
+  message PerformanceMetrics {
+    double cpu_usage = 1;
+    double memory_usage = 2;
+    double network_bandwidth = 3;
+    uint32 message_rate = 4;
+    double latency_ms = 5;
+  }
+}
