@@ -1,0 +1,23 @@
+# Build artifacts
+build/
+devel/
+
+# Log files
+*.log
+
+# OS-specific files
+.DS_Store
+
+# IDE/Editor files
+.idea/
+
+UrbanLoco*
+datasets/*
+logs/*
+scripts/*
+
+#catkn
+.catkin_tools/*
+.catkin_workspace
+
+*.pdf
