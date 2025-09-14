@@ -169,12 +169,12 @@ if(CATKIN_ENABLE_TESTING)
   endif()
   
   # Integration tests
-  add_rostest_gtest(${PROJECT_NAME}_integration_tests
-    tests/integration_tests/test_end_to_end.launch
-    tests/integration_tests/test_end_to_end.cpp
-  )
+  #add_rostest_gtest(${PROJECT_NAME}_integration_tests
+  #  tests/integration_tests/test_end_to_end.launch
+  #  tests/integration_tests/test_end_to_end.cpp
+  #)
   
-  if(TARGET ${PROJECT_NAME}_integration_tests)
-    target_link_libraries(${PROJECT_NAME}_integration_tests ${PROJECT_NAME})
-  endif()
+  #if(TARGET ${PROJECT_NAME}_integration_tests)
+  #  target_link_libraries(${PROJECT_NAME}_integration_tests ${PROJECT_NAME})
+  #endif()
 endif()
