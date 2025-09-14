@@ -91,6 +91,8 @@ add_library(${PROJECT_NAME}
   src/protocol_handler.cpp
   src/sensor_fusion.cpp
   src/hybrid_synchronizer.cpp
+  src/data_transfer_queue.cpp
+  src/camera_timestamp_rectifier.cpp
   src/utils/thread_pool.cpp
   ${PROTO_SRCS}
 )
@@ -150,3 +152,29 @@ install(DIRECTORY config/
   DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION}/config
   FILES_MATCHING PATTERN "*.yaml"
 )
+
+
+# Testing
+if(CATKIN_ENABLE_TESTING)
+  find_package(rostest REQUIRED)
+  find_package(GTest REQUIRED)
+  
+  # Unit tests
+  catkin_add_gtest(${PROJECT_NAME}_unit_tests
+    tests/unit_tests/test_minimal_functionality.cpp
+  )
+  
+  if(TARGET ${PROJECT_NAME}_unit_tests)
+    target_link_libraries(${PROJECT_NAME}_unit_tests ${PROJECT_NAME})
+  endif()
+  
+  # Integration tests
+  add_rostest_gtest(${PROJECT_NAME}_integration_tests
+    tests/integration_tests/test_end_to_end.launch
+    tests/integration_tests/test_end_to_end.cpp
+  )
+  
+  if(TARGET ${PROJECT_NAME}_integration_tests)
+    target_link_libraries(${PROJECT_NAME}_integration_tests ${PROJECT_NAME})
+  endif()
+endif()

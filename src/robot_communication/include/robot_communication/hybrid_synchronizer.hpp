@@ -29,13 +29,18 @@ class HybridSynchronizer {
 public:
     using SyncCallback = std::function<void(const SensorDataPacket&)>;
     
-    // ApproximateTime policy for core sensors (functional approach)
+    // ApproximateTime policy for all sensors including 6 cameras
     typedef message_filters::sync_policies::ApproximateTime<
         sensor_msgs::PointCloud2,     // LiDAR
-        sensor_msgs::Imu,             // IMU  
+        sensor_msgs::Imu,             // IMU
         sensor_msgs::NavSatFix,       // GNSS
-        sensor_msgs::CompressedImage  // Front camera (cam0)
-    > ApproximateTimePolicy;
+        sensor_msgs::CompressedImage, // Camera cam0
+        sensor_msgs::CompressedImage, // Camera cam1
+        sensor_msgs::CompressedImage, // Camera cam2
+        sensor_msgs::CompressedImage, // Camera cam3
+        sensor_msgs::CompressedImage, // Camera cam4
+        sensor_msgs::CompressedImage  // Camera cam5
+    > MultiCameraPolicy;
     
     struct Config {
         // message_filters configuration
@@ -115,14 +120,31 @@ private:
     Config config_;
     SyncCallback sync_callback_;
     
-    // message_filters subscribers (core sensors)
+    // message_filters subscribers for all sensors
     message_filters::Subscriber<sensor_msgs::PointCloud2> lidar_sub_;
     message_filters::Subscriber<sensor_msgs::Imu> imu_sub_;
     message_filters::Subscriber<sensor_msgs::NavSatFix> gnss_sub_;
     message_filters::Subscriber<sensor_msgs::CompressedImage> cam0_sub_;
+    message_filters::Subscriber<sensor_msgs::CompressedImage> cam1_sub_;
+    message_filters::Subscriber<sensor_msgs::CompressedImage> cam2_sub_;
+    message_filters::Subscriber<sensor_msgs::CompressedImage> cam3_sub_;
+    message_filters::Subscriber<sensor_msgs::CompressedImage> cam4_sub_;
+    message_filters::Subscriber<sensor_msgs::CompressedImage> cam5_sub_;
     
-    // ApproximateTime synchronizer
-    std::unique_ptr<message_filters::Synchronizer<ApproximateTimePolicy>> sync_;
+    // Debug subscribers for individual message tracking
+    ros::Subscriber debug_lidar_sub_;
+    ros::Subscriber debug_imu_sub_;
+    ros::Subscriber debug_gnss_sub_;
+    ros::Subscriber debug_cam0_sub_;
+    
+    // Debug counters
+    std::atomic<uint32_t> debug_lidar_count_{0};
+    std::atomic<uint32_t> debug_imu_count_{0};
+    std::atomic<uint32_t> debug_gnss_count_{0};
+    std::atomic<uint32_t> debug_cam0_count_{0};
+    
+    // Multi-camera synchronizer
+    std::unique_ptr<message_filters::Synchronizer<MultiCameraPolicy>> sync_;
     
     // State management
     std::atomic<bool> is_active_{false};
@@ -149,20 +171,37 @@ private:
     
     std::unique_ptr<BandwidthMonitor> bandwidth_monitor_;
     
-    // Core synchronization callback
+    // Core synchronization callback with all 6 cameras
     void synchronizedCallback(
         const sensor_msgs::PointCloud2::ConstPtr& lidar,
         const sensor_msgs::Imu::ConstPtr& imu,
         const sensor_msgs::NavSatFix::ConstPtr& gnss,
-        const sensor_msgs::CompressedImage::ConstPtr& cam0
+        const sensor_msgs::CompressedImage::ConstPtr& cam0,
+        const sensor_msgs::CompressedImage::ConstPtr& cam1,
+        const sensor_msgs::CompressedImage::ConstPtr& cam2,
+        const sensor_msgs::CompressedImage::ConstPtr& cam3,
+        const sensor_msgs::CompressedImage::ConstPtr& cam4,
+        const sensor_msgs::CompressedImage::ConstPtr& cam5
     );
+    
+    // Debug callbacks for individual message tracking
+    void debugLidarCallback(const sensor_msgs::PointCloud2::ConstPtr& msg);
+    void debugImuCallback(const sensor_msgs::Imu::ConstPtr& msg);
+    void debugGnssCallback(const sensor_msgs::NavSatFix::ConstPtr& msg);
+    void debugCam0Callback(const sensor_msgs::CompressedImage::ConstPtr& msg);
     
     // Bandwidth-aware processing  
     bool shouldDropPacket(const std::vector<sensor_msgs::CompressedImage::ConstPtr>& cameras);
     std::vector<sensor_msgs::CompressedImage::ConstPtr> applyPriorityDropping(
         const std::vector<sensor_msgs::CompressedImage::ConstPtr>& cameras);
     
-    // Packet building
+    // Packet building (overloaded versions)
+    SensorDataPacket buildSensorPacket(
+        const sensor_msgs::PointCloud2::ConstPtr& lidar,
+        const sensor_msgs::Imu::ConstPtr& imu,
+        const sensor_msgs::NavSatFix::ConstPtr& gnss
+    );
+    
     SensorDataPacket buildSensorPacket(
         const sensor_msgs::PointCloud2::ConstPtr& lidar,
         const sensor_msgs::Imu::ConstPtr& imu,

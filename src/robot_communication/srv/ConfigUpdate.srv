@@ -1,0 +1,6 @@
+# Service for runtime configuration updates
+string parameter_name
+string parameter_value
+---
+bool success
+string message

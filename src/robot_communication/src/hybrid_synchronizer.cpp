@@ -1,5 +1,6 @@
 #include "robot_communication/hybrid_synchronizer.hpp"
 #include <boost/function.hpp>
+#include <boost/function.hpp>
 
 using boost::placeholders::_1;
 using boost::placeholders::_2;
@@ -131,36 +132,86 @@ bool HybridSynchronizer::start(const SyncCallback& callback) {
     
     sync_callback_ = callback;
     
-    // Initialize message_filters subscribers
-    lidar_sub_.subscribe(nh_, "/rslidar_points", config_.queue_size);
-    imu_sub_.subscribe(nh_, "/imu_raw", config_.queue_size);
-    gnss_sub_.subscribe(nh_, "/ublox_gps_node/fix", config_.queue_size);
+    // Get topic names from ROS parameters (configurable for dataset vs real sensors)
+    // Use global nodehandle to access parameters loaded via rosparam load
+    ros::NodeHandle global_nh;
+    std::string lidar_topic, imu_topic, gnss_topic, camera0_topic;
+    std::string camera1_topic, camera2_topic, camera3_topic, camera4_topic, camera5_topic;
+    global_nh.param("synchronizer/topics/lidar", lidar_topic, std::string("/sensors/lidar_realtime"));
+    global_nh.param("synchronizer/topics/imu", imu_topic, std::string("/sensors/imu_realtime"));
+    global_nh.param("synchronizer/topics/gnss", gnss_topic, std::string("/sensors/gnss_realtime"));
+    global_nh.param("synchronizer/topics/camera0", camera0_topic, std::string("/sensors/camera0_realtime"));
+    global_nh.param("synchronizer/topics/camera1", camera1_topic, std::string("/sensors/camera1_realtime"));
+    global_nh.param("synchronizer/topics/camera2", camera2_topic, std::string("/sensors/camera2_realtime"));
+    global_nh.param("synchronizer/topics/camera3", camera3_topic, std::string("/sensors/camera3_realtime"));
+    global_nh.param("synchronizer/topics/camera4", camera4_topic, std::string("/sensors/camera4_realtime"));
+    global_nh.param("synchronizer/topics/camera5", camera5_topic, std::string("/sensors/camera5_realtime"));
     
-    // Camera subscribers
-    cam0_sub_.subscribe(nh_, "/camera_array/cam0/image_raw/compressed", config_.queue_size);
+    ROS_INFO("Using topic configuration:");
+    ROS_INFO("  LiDAR: %s", lidar_topic.c_str());
+    ROS_INFO("  IMU: %s", imu_topic.c_str());
+    ROS_INFO("  GNSS: %s", gnss_topic.c_str());
+    ROS_INFO("  Camera0: %s", camera0_topic.c_str());
+    ROS_INFO("  Additional cameras: cam1-cam5 configured for future expansion");
     
-    // Create ApproximateTime synchronizer
-    sync_ = std::make_unique<message_filters::Synchronizer<ApproximateTimePolicy>>(
-        ApproximateTimePolicy(config_.queue_size),
-        lidar_sub_, imu_sub_, gnss_sub_, 
-        cam0_sub_
+    // Initialize message_filters subscribers for all sensors
+    lidar_sub_.subscribe(nh_, lidar_topic, config_.queue_size);
+    imu_sub_.subscribe(nh_, imu_topic, config_.queue_size);
+    gnss_sub_.subscribe(nh_, gnss_topic, config_.queue_size);
+    cam0_sub_.subscribe(nh_, camera0_topic, config_.queue_size);
+    cam1_sub_.subscribe(nh_, camera1_topic, config_.queue_size);
+    cam2_sub_.subscribe(nh_, camera2_topic, config_.queue_size);
+    cam3_sub_.subscribe(nh_, camera3_topic, config_.queue_size);
+    cam4_sub_.subscribe(nh_, camera4_topic, config_.queue_size);
+    cam5_sub_.subscribe(nh_, camera5_topic, config_.queue_size);
+    
+    // DEBUG: Initialize individual tracking subscribers  
+    debug_lidar_sub_ = nh_.subscribe(lidar_topic, 1, &HybridSynchronizer::debugLidarCallback, this);
+    debug_imu_sub_ = nh_.subscribe(imu_topic, 1, &HybridSynchronizer::debugImuCallback, this);
+    debug_gnss_sub_ = nh_.subscribe(gnss_topic, 1, &HybridSynchronizer::debugGnssCallback, this);
+    debug_cam0_sub_ = nh_.subscribe(camera0_topic, 1, &HybridSynchronizer::debugCam0Callback, this);
+    
+    // Create Multi-camera synchronizer (9 sensors total)
+    sync_ = std::make_unique<message_filters::Synchronizer<MultiCameraPolicy>>(
+        MultiCameraPolicy(config_.queue_size),
+        lidar_sub_, imu_sub_, gnss_sub_,
+        cam0_sub_, cam1_sub_, cam2_sub_, cam3_sub_, cam4_sub_, cam5_sub_
     );
     
-    // Configure synchronizer
-    sync_->setMaxIntervalDuration(ros::Duration(config_.max_interval_duration));
-    sync_->setAgePenalty(config_.age_penalty);
+    // Configure synchronizer - VERY RELAXED for real dataset with 2s LiDAR intervals  
+    sync_->setMaxIntervalDuration(ros::Duration(2.5));  // 2.5s tolerance for LiDAR timing
+    sync_->setAgePenalty(0.01); // Very low penalty for large time differences
     
-    // Register callback - functional approach with 4 sensors
-    sync_->registerCallback(boost::bind(&HybridSynchronizer::synchronizedCallback, this, _1, _2, _3, _4));
+    // Register callback using wrapper function - boost::function supports 9 parameters
+    sync_->registerCallback(boost::function<void(const sensor_msgs::PointCloud2::ConstPtr&,
+                                                 const sensor_msgs::Imu::ConstPtr&,
+                                                 const sensor_msgs::NavSatFix::ConstPtr&,
+                                                 const sensor_msgs::CompressedImage::ConstPtr&,
+                                                 const sensor_msgs::CompressedImage::ConstPtr&,
+                                                 const sensor_msgs::CompressedImage::ConstPtr&,
+                                                 const sensor_msgs::CompressedImage::ConstPtr&,
+                                                 const sensor_msgs::CompressedImage::ConstPtr&,
+                                                 const sensor_msgs::CompressedImage::ConstPtr&)>(
+        [this](const sensor_msgs::PointCloud2::ConstPtr& lidar,
+               const sensor_msgs::Imu::ConstPtr& imu,
+               const sensor_msgs::NavSatFix::ConstPtr& gnss,
+               const sensor_msgs::CompressedImage::ConstPtr& cam0,
+               const sensor_msgs::CompressedImage::ConstPtr& cam1,
+               const sensor_msgs::CompressedImage::ConstPtr& cam2,
+               const sensor_msgs::CompressedImage::ConstPtr& cam3,
+               const sensor_msgs::CompressedImage::ConstPtr& cam4,
+               const sensor_msgs::CompressedImage::ConstPtr& cam5) {
+            this->synchronizedCallback(lidar, imu, gnss, cam0, cam1, cam2, cam3, cam4, cam5);
+        }));
     
     is_active_.store(true);
     
     ROS_INFO("HybridSynchronizer started successfully");
-    ROS_INFO("Listening on topics:");
-    ROS_INFO("  LiDAR: /rslidar_points");
-    ROS_INFO("  IMU: /imu_raw"); 
-    ROS_INFO("  GNSS: /ublox_gps_node/fix");
-    ROS_INFO("  Cameras: /camera_array/cam[0-5]/image_raw/compressed");
+    ROS_INFO("Subscribed to synchronized topics:");
+    ROS_INFO("  LiDAR: %s", lidar_topic.c_str());
+    ROS_INFO("  IMU: %s", imu_topic.c_str()); 
+    ROS_INFO("  GNSS: %s", gnss_topic.c_str());
+    ROS_INFO("  Camera: %s (with real-time timestamps)", camera0_topic.c_str());
     
     return true;
 }
@@ -182,47 +233,46 @@ void HybridSynchronizer::synchronizedCallback(
     const sensor_msgs::PointCloud2::ConstPtr& lidar,
     const sensor_msgs::Imu::ConstPtr& imu,
     const sensor_msgs::NavSatFix::ConstPtr& gnss,
-    const sensor_msgs::CompressedImage::ConstPtr& cam0) {
+    const sensor_msgs::CompressedImage::ConstPtr& cam0,
+    const sensor_msgs::CompressedImage::ConstPtr& cam1,
+    const sensor_msgs::CompressedImage::ConstPtr& cam2,
+    const sensor_msgs::CompressedImage::ConstPtr& cam3,
+    const sensor_msgs::CompressedImage::ConstPtr& cam4,
+    const sensor_msgs::CompressedImage::ConstPtr& cam5) {
+
+    size_t total_camera_bytes = cam0->data.size() + cam1->data.size() + cam2->data.size() +
+                               cam3->data.size() + cam4->data.size() + cam5->data.size();
+
+    ROS_INFO_THROTTLE(2.0, "SYNCHRONIZED 9 SENSORS! LiDAR: %u pts, IMU(%.2f,%.2f,%.2f), GNSS: %.6f, 6 Cams: %zu KB total",
+                     lidar->width * lidar->height,
+                     imu->linear_acceleration.x, imu->linear_acceleration.y, imu->linear_acceleration.z,
+                     gnss->latitude,
+                     total_camera_bytes / 1024);
     
     if (!sync_callback_) {
         ROS_WARN_THROTTLE(5.0, "No sync callback registered");
         return;
     }
     
-    // Collect camera data
-    std::vector<sensor_msgs::CompressedImage::ConstPtr> cameras = {
-        cam0
-    };
-    
-    // Estimate packet size for bandwidth check
-    size_t estimated_size = estimatePacketSize(lidar, cameras);
-    
-    // Bandwidth-aware decision
-    if (config_.bandwidth_aware && !bandwidth_monitor_->allowTransmission(estimated_size)) {
-        // Apply priority-based dropping
-        cameras = applyPriorityDropping(cameras);
-        
-        // Recalculate size after dropping
-        estimated_size = estimatePacketSize(lidar, cameras);
-        
-        if (!bandwidth_monitor_->allowTransmission(estimated_size)) {
-            // Still too much - drop this packet entirely
-            std::lock_guard<std::mutex> lock(metrics_mutex_);
-            metrics_.packets_dropped++;
-            ROS_DEBUG("Packet dropped due to bandwidth constraints");
-            return;
-        }
-    }
-    
-    // Build synchronized packet
+    // Build synchronized packet (including camera with real-time timestamp)
     auto start_time = std::chrono::steady_clock::now();
     
+    // Create vector with all 6 cameras
+    std::vector<sensor_msgs::CompressedImage::ConstPtr> cameras;
+    cameras.push_back(cam0);
+    cameras.push_back(cam1);
+    cameras.push_back(cam2);
+    cameras.push_back(cam3);
+    cameras.push_back(cam4);
+    cameras.push_back(cam5);
+
     SensorDataPacket packet = buildSensorPacket(lidar, imu, gnss, cameras);
-    
+
     auto end_time = std::chrono::steady_clock::now();
     double processing_latency = std::chrono::duration<double, std::milli>(end_time - start_time).count();
-    
-    // Record bandwidth usage
+
+    // Record bandwidth usage (estimated size for 9 sensors including 6 cameras)
+    size_t estimated_size = lidar->data.size() + sizeof(sensor_msgs::Imu) + sizeof(sensor_msgs::NavSatFix) + total_camera_bytes;
     bandwidth_monitor_->recordTransmission(estimated_size);
     
     // Update metrics
@@ -281,6 +331,43 @@ std::vector<sensor_msgs::CompressedImage::ConstPtr> HybridSynchronizer::applyPri
     return filtered_cameras;
 }
 
+// Simplified version for 3 synchronized sensors only
+SensorDataPacket HybridSynchronizer::buildSensorPacket(
+    const sensor_msgs::PointCloud2::ConstPtr& lidar,
+    const sensor_msgs::Imu::ConstPtr& imu,
+    const sensor_msgs::NavSatFix::ConstPtr& gnss) {
+    
+    SensorDataPacket packet;
+    
+    // Set metadata
+    static uint64_t sequence_id = 0;
+    packet.set_sequence_id(++sequence_id);
+    
+    // Set timestamp (use LiDAR timestamp as reference)
+    auto timestamp = packet.mutable_timestamp();
+    timestamp->set_seconds(lidar->header.stamp.sec);
+    timestamp->set_nanos(lidar->header.stamp.nsec);
+    
+    // Convert sensor data
+    if (lidar) {
+        auto proto_lidar = packet.mutable_lidar_data();
+        convertLidarData(*lidar, *proto_lidar);
+    }
+    
+    if (imu) {
+        auto proto_imu = packet.mutable_imu_data();
+        convertImuData(*imu, *proto_imu);
+    }
+    
+    if (gnss) {
+        auto proto_gnss = packet.mutable_gnss_data();
+        convertGnssData(*gnss, *proto_gnss);
+    }
+    
+    return packet;
+}
+
+// Full version with cameras (kept for future use)
 SensorDataPacket HybridSynchronizer::buildSensorPacket(
     const sensor_msgs::PointCloud2::ConstPtr& lidar,
     const sensor_msgs::Imu::ConstPtr& imu,
@@ -398,5 +485,32 @@ HybridSynchronizer::Metrics HybridSynchronizer::getMetrics() const {
     std::lock_guard<std::mutex> lock(metrics_mutex_);
     return metrics_;
 }
+
+// DEBUG CALLBACKS - Individual message tracking
+void HybridSynchronizer::debugLidarCallback(const sensor_msgs::PointCloud2::ConstPtr& msg) {
+    uint32_t count = debug_lidar_count_.fetch_add(1) + 1;
+    ROS_DEBUG_THROTTLE(2.0, "LiDAR msg #%u: %u points, timestamp: %u.%09u",
+                      count, msg->width * msg->height, msg->header.stamp.sec, msg->header.stamp.nsec);
+}
+
+void HybridSynchronizer::debugImuCallback(const sensor_msgs::Imu::ConstPtr& msg) {
+    uint32_t count = debug_imu_count_.fetch_add(1) + 1;
+    ROS_DEBUG_THROTTLE(2.0, "IMU msg #%u: acc(%.2f,%.2f,%.2f), timestamp: %u.%09u",
+                      count, msg->linear_acceleration.x, msg->linear_acceleration.y, msg->linear_acceleration.z,
+                      msg->header.stamp.sec, msg->header.stamp.nsec);
+}
+
+void HybridSynchronizer::debugGnssCallback(const sensor_msgs::NavSatFix::ConstPtr& msg) {
+    uint32_t count = debug_gnss_count_.fetch_add(1) + 1;
+    ROS_DEBUG_THROTTLE(2.0, "GNSS msg #%u: lat=%.6f, lon=%.6f, timestamp: %u.%09u",
+                      count, msg->latitude, msg->longitude, msg->header.stamp.sec, msg->header.stamp.nsec);
+}
+
+void HybridSynchronizer::debugCam0Callback(const sensor_msgs::CompressedImage::ConstPtr& msg) {
+    uint32_t count = debug_cam0_count_.fetch_add(1) + 1;
+    ROS_DEBUG_THROTTLE(2.0, "CAM0 msg #%u: %zu bytes, timestamp: %u.%09u",
+                      count, msg->data.size(), msg->header.stamp.sec, msg->header.stamp.nsec);
+}
+
 
 } // namespace robot_communication

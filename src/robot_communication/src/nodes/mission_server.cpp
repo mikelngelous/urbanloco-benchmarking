@@ -3,6 +3,10 @@
 #include <thread>
 #include <memory>
 #include <signal.h>
+#include <chrono>
+#include <iomanip>
+#include <iostream>
+#include <ctime>
 #include "sensor_data.pb.h"
 
 using boost::asio::ip::tcp;
@@ -71,34 +75,164 @@ private:
         MissionServer* server_;
         std::array<uint8_t, 1024> buffer_;
         
+        // Frame parsing state
+        enum ReadState { READING_LENGTH, READING_PAYLOAD };
+        ReadState read_state_ = READING_LENGTH;
+        uint32_t expected_payload_size_ = 0;
+        std::vector<uint8_t> payload_buffer_;
+        std::array<uint8_t, 4> length_buffer_;
+        
         void startRead() {
+            if (read_state_ == READING_LENGTH) {
+                readLength();
+            } else {
+                readPayload();
+            }
+        }
+        
+        void readLength() {
             auto self = shared_from_this();
-            socket_.async_read_some(
-                boost::asio::buffer(buffer_),
-                [this, self](boost::system::error_code ec, std::size_t length) {
+            boost::asio::async_read(
+                socket_,
+                boost::asio::buffer(length_buffer_),
+                [this, self](boost::system::error_code ec, std::size_t /*length*/) {
                     if (!ec) {
-                        handleRead(length);
-                        startRead();
+                        // Parse length from network byte order
+                        uint32_t network_size;
+                        std::memcpy(&network_size, length_buffer_.data(), 4);
+                        expected_payload_size_ = ntohl(network_size);
+                        
+                        // Validate payload size (max 10MB)
+                        if (expected_payload_size_ > 0 && expected_payload_size_ < 10*1024*1024) {
+                            payload_buffer_.resize(expected_payload_size_);
+                            read_state_ = READING_PAYLOAD;
+                            readPayload();
+                        } else {
+                            ROS_ERROR("Invalid payload size: %u bytes", expected_payload_size_);
+                            read_state_ = READING_LENGTH;
+                            readLength();
+                        }
                     } else {
-                        ROS_INFO("Client disconnected: %s", ec.message().c_str());
+                        ROS_INFO("Client disconnected during length read: %s", ec.message().c_str());
                     }
                 });
         }
         
-        void handleRead(std::size_t length) {
+        void readPayload() {
+            auto self = shared_from_this();
+            boost::asio::async_read(
+                socket_,
+                boost::asio::buffer(payload_buffer_),
+                [this, self](boost::system::error_code ec, std::size_t length) {
+                    if (!ec) {
+                        handleCompleteMessage(length);
+                        read_state_ = READING_LENGTH;
+                        readLength();  // Start reading next message
+                    } else {
+                        ROS_INFO("Client disconnected during payload read: %s", ec.message().c_str());
+                    }
+                });
+        }
+        
+        void handleCompleteMessage(std::size_t length) {
             server_->total_bytes_received_ += length;
             server_->total_packets_received_++;
             
             // Print received data info
-            ROS_INFO_THROTTLE(1.0, "Server received: %zu bytes (Total: %lu packets, %lu bytes)",
-                             length, 
+            ROS_INFO_THROTTLE(5.0, "Received data: %zu bytes (Total: %lu packets, %lu bytes)",
+                             length,
                              server_->total_packets_received_.load(),
                              server_->total_bytes_received_.load());
             
-            // Here we would parse the protobuf SensorDataPacket
-            // For demo, just acknowledge receipt
-            if (length > 4) { // Basic validity check
-                std::cout << "Received sensor data packet of " << length << " bytes" << std::endl;
+            // Parse and display the protobuf SensorDataPacket
+            try {
+                SensorDataPacket packet;
+                if (packet.ParseFromArray(payload_buffer_.data(), static_cast<int>(length))) {
+                        // Get current timestamp for server-side logging
+                        auto now = std::chrono::system_clock::now();
+                        auto time_val = std::chrono::system_clock::to_time_t(now);
+                        auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                            now.time_since_epoch()) % 1000;
+                        
+                        struct tm* tm_info = std::localtime(&time_val);
+                        char timestamp_str[100];
+                        strftime(timestamp_str, sizeof(timestamp_str), "%Y-%m-%d %H:%M:%S", tm_info);
+                        
+                        std::cout << "\n=== [" << timestamp_str << "." 
+                                  << std::setfill('0') << std::setw(3) << ms.count() 
+                                  << "] SENSOR DATA PACKET ===" << std::endl;
+                        
+                        std::cout << "Packet Info: seq=" << packet.sequence_id() 
+                                  << ", frame=" << packet.frame_id()
+                                  << ", size=" << length << " bytes" << std::endl;
+                        
+                        // Display packet timestamp (from robot)
+                        if (packet.has_timestamp()) {
+                            auto pkt_ts = packet.timestamp();
+                            auto pkt_time_val = static_cast<std::time_t>(pkt_ts.seconds());
+                            struct tm* pkt_tm = std::localtime(&pkt_time_val);
+                            char pkt_timestamp_str[100];
+                            strftime(pkt_timestamp_str, sizeof(pkt_timestamp_str), "%H:%M:%S", pkt_tm);
+                            std::cout << "Robot Time: " << pkt_timestamp_str 
+                                      << "." << std::setfill('0') << std::setw(3) 
+                                      << (pkt_ts.nanos() / 1000000) << std::endl;
+                        }
+                        
+                        // Display sensor data summary
+                        std::vector<std::string> sensors;
+                        if (packet.has_lidar_data()) {
+                            auto& lidar = packet.lidar_data();
+                            sensors.push_back("LiDAR(" + std::to_string(lidar.point_data().size()) + "B)");
+                        }
+                        if (packet.has_imu_data()) {
+                            auto& imu = packet.imu_data();
+                            sensors.push_back("IMU(acc:" + 
+                                std::to_string(imu.linear_acceleration().x()) + "," +
+                                std::to_string(imu.linear_acceleration().y()) + "," +
+                                std::to_string(imu.linear_acceleration().z()) + ")");
+                        }
+                        if (packet.has_gnss_data()) {
+                            auto& gnss = packet.gnss_data();
+                            sensors.push_back("GNSS(lat:" + std::to_string(gnss.latitude()) + 
+                                ", lon:" + std::to_string(gnss.longitude()) + 
+                                ", alt:" + std::to_string(gnss.altitude()) + ")");
+                        }
+                        if (packet.camera_data_size() > 0) {
+                            sensors.push_back("Camera(" + std::to_string(packet.camera_data_size()) + 
+                                " imgs, " + std::to_string(packet.camera_data(0).data().size()) + "B each)");
+                        }
+                        
+                        if (!sensors.empty()) {
+                            std::cout << "Sensors: ";
+                            for (size_t i = 0; i < sensors.size(); ++i) {
+                                if (i > 0) std::cout << " | ";
+                                std::cout << sensors[i];
+                            }
+                            std::cout << std::endl;
+                        }
+                        
+                        std::cout << "===============================================\n" << std::endl;
+                        std::cout.flush();
+                        
+                    } else {
+                        // Get current timestamp for error logging
+                        auto now = std::chrono::system_clock::now();
+                        auto time_val = std::chrono::system_clock::to_time_t(now);
+                        auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                            now.time_since_epoch()) % 1000;
+                        
+                        struct tm* tm_info = std::localtime(&time_val);
+                        char timestamp_str[100];
+                        strftime(timestamp_str, sizeof(timestamp_str), "%Y-%m-%d %H:%M:%S", tm_info);
+                        
+                        std::cout << "ERROR [" << timestamp_str << "." 
+                                  << std::setfill('0') << std::setw(3) << ms.count() 
+                                  << "] Failed to parse protobuf packet (" << length 
+                                  << " bytes)" << std::endl;
+                        std::cout.flush();
+                    }
+            } catch (const std::exception& e) {
+                std::cout << "ERROR Exception parsing sensor data: " << e.what() << std::endl;
                 std::cout.flush();
             }
         }

@@ -2,6 +2,8 @@
 #include <signal.h>
 #include "robot_communication/hybrid_synchronizer.hpp"
 #include "robot_communication/communication_manager.hpp"
+#include "robot_communication/data_transfer_queue.hpp"
+#include "robot_communication/camera_timestamp_rectifier.hpp"
 
 using namespace robot_communication;
 
@@ -9,54 +11,128 @@ class RobotDataPublisherNode {
 public:
     RobotDataPublisherNode() : nh_("~") {
         ROS_INFO("Starting Robot Data Publisher Node");
+        ROS_INFO("ROS Master URI: %s", ros::master::getURI().c_str());
         
         // Load parameters from YAML configuration
+        ROS_INFO("Loading parameters...");
         loadParameters();
+        ROS_INFO("Parameters loaded successfully");
         
         // Initialize components
+        ROS_INFO("Creating HybridSynchronizer configuration...");
         HybridSynchronizer::Config sync_config = createSynchronizerConfig();
+        ROS_INFO("Initializing HybridSynchronizer...");
         synchronizer_ = std::make_unique<HybridSynchronizer>(nh_, sync_config);
+        ROS_INFO("HybridSynchronizer created successfully");
         
+        ROS_INFO("Creating CommunicationManager configuration...");
         CommunicationManager::Config comm_config = createCommunicationConfig();
+        ROS_INFO("Initializing CommunicationManager...");
         comm_manager_ = std::make_unique<CommunicationManager>(comm_config);
+        ROS_INFO("CommunicationManager created successfully");
+        
+        // Initialize data transfer queue with decoupling capabilities
+        ROS_INFO("Initializing DataTransferQueue for producer-consumer decoupling...");
+        DataTransferQueue::Config queue_config;
+        queue_config.max_queue_size = 500;              // Buffer up to 500 packets
+        queue_config.drop_oldest_on_full = true;        // Drop oldest when full
+        queue_config.timeout_ms = std::chrono::milliseconds(100);
+        queue_config.enable_metrics = true;
+        data_queue_ = std::make_unique<DataTransferQueue>(queue_config);
+        ROS_INFO("DataTransferQueue created successfully");
+        
+        // Initialize camera timestamp rectifier for real-time conversion
+        ROS_INFO("Initializing CameraTimestampRectifier for real-time timestamps...");
+        camera_rectifier_ = std::make_unique<CameraTimestampRectifier>(
+            nh_, 
+            "/camera_array/cam0/image_raw/compressed",           // Raw input with zero timestamps
+            "/camera_array/cam0/image_raw/compressed/rectified"  // Output with real-time timestamps
+        );
+        ROS_INFO("CameraTimestampRectifier created successfully");
+        
+        ROS_INFO("RobotDataPublisherNode constructor completed");
     }
     
     bool start() {
+        ROS_INFO("Starting robot data publisher components...");
+        
         // Start communication manager
-        bool comm_started = comm_manager_->start(
-            [this](bool connected) { onConnectionStatus(connected); },
-            [this](const MissionCommand& cmd) { onMissionCommand(cmd); }
-        );
-        
-        if (!comm_started) {
-            ROS_ERROR("Failed to start communication manager");
+        ROS_INFO("Starting CommunicationManager...");
+        try {
+            bool comm_started = comm_manager_->start(
+                [this](bool connected) { onConnectionStatus(connected); },
+                [this](const MissionCommand& cmd) { onMissionCommand(cmd); }
+            );
+            
+            if (!comm_started) {
+                ROS_ERROR("Failed to start communication manager");
+                return false;
+            }
+            ROS_INFO("CommunicationManager started successfully");
+        } catch (const std::exception& e) {
+            ROS_ERROR("Exception starting CommunicationManager: %s", e.what());
             return false;
         }
         
-        // Start hybrid synchronizer
-        bool sync_started = synchronizer_->start(
-            [this](const SensorDataPacket& packet) { onSensorData(packet); }
-        );
+        // Start camera timestamp rectifier for real-time conversion
+        ROS_INFO("Starting CameraTimestampRectifier...");
+        camera_rectifier_->start();
+        ROS_INFO("CameraTimestampRectifier started - converting camera timestamps to real-time");
         
-        if (!sync_started) {
-            ROS_ERROR("Failed to start hybrid synchronizer");
+        // Start network worker thread (Consumer)
+        ROS_INFO("Starting network worker thread for decoupled communication...");
+        network_thread_ = std::make_unique<std::thread>(&RobotDataPublisherNode::networkWorkerThread, this);
+        ROS_INFO("Network worker thread started successfully");
+        
+        // Start hybrid synchronizer (Producer) 
+        ROS_INFO("Starting HybridSynchronizer...");
+        try {
+            bool sync_started = synchronizer_->start(
+                [this](const SensorDataPacket& packet) { onSensorData(packet); }
+            );
+            
+            if (!sync_started) {
+                ROS_ERROR("Failed to start hybrid synchronizer");
+                return false;
+            }
+            ROS_INFO("HybridSynchronizer started successfully");
+        } catch (const std::exception& e) {
+            ROS_ERROR("Exception starting HybridSynchronizer: %s", e.what());
             return false;
         }
         
-        ROS_INFO("Robot Data Publisher Node started successfully");
+        ROS_INFO("Robot Data Publisher Node started successfully with Producer-Consumer architecture");
         ROS_INFO("Server: %s:%d", server_host_.c_str(), server_port_);
         
         return true;
     }
     
     void stop() {
-        ROS_INFO("Stopping Robot Data Publisher Node");
+        ROS_INFO("Stopping Robot Data Publisher Node with Producer-Consumer architecture");
         
         if (synchronizer_) {
+            ROS_INFO("Stopping HybridSynchronizer (Producer)...");
             synchronizer_->stop();
         }
         
+        if (camera_rectifier_) {
+            ROS_INFO("Stopping CameraTimestampRectifier...");
+            camera_rectifier_->stop();
+        }
+        
+        if (data_queue_) {
+            ROS_INFO("Shutting down DataTransferQueue...");
+            data_queue_->shutdown();
+        }
+        
+        if (network_thread_ && network_thread_->joinable()) {
+            ROS_INFO("Stopping network worker thread (Consumer)...");
+            network_thread_->join();
+            ROS_INFO("Network worker thread stopped");
+        }
+        
         if (comm_manager_) {
+            ROS_INFO("Stopping CommunicationManager...");
             comm_manager_->stop();
         }
         
@@ -69,6 +145,9 @@ private:
     
     std::unique_ptr<HybridSynchronizer> synchronizer_;
     std::unique_ptr<CommunicationManager> comm_manager_;
+    std::unique_ptr<DataTransferQueue> data_queue_;
+    std::unique_ptr<std::thread> network_thread_;
+    std::unique_ptr<CameraTimestampRectifier> camera_rectifier_;
     
     // Configuration parameters
     std::string server_host_;
@@ -142,32 +221,37 @@ private:
     }
     
     HybridSynchronizer::Config createSynchronizerConfig() {
-        try {
-            // Try to load from YAML file first
-            std::string config_path = "config/communication_config.yaml";
-            
-            // Check if running with roslaunch (config path relative to package)
-            if (auto package_path = std::getenv("ROS_PACKAGE_PATH")) {
-                config_path = std::string(package_path) + "/../robot_communication/" + config_path;
-            }
-            
-            return HybridSynchronizer::Config::fromYAMLFile(config_path);
-            
-        } catch (const std::exception& e) {
-            ROS_WARN("Failed to load YAML sync config: %s. Using defaults.", e.what());
-            
-            // Fallback to default configuration
-            HybridSynchronizer::Config config;
-            config.queue_size = 10;
-            config.max_interval_duration = 0.05;  // 50ms
-            config.bandwidth_aware = true;
-            config.bandwidth_threshold = 0.90;
-            config.max_bandwidth_mbps = 400.0;
-            config.enable_metrics = true;
-            config.metrics_publish_rate = 1.0;
-            
-            return config;
-        }
+        // Load configuration from ROS parameters (loaded via rosparam load)
+        ROS_INFO("Loading HybridSynchronizer config from ROS parameters...");
+        
+        HybridSynchronizer::Config config;
+        
+        // Synchronization parameters from synchronizer/sync_params
+        nh_.param("synchronizer/sync_params/queue_size", config.queue_size, 10);
+        nh_.param("synchronizer/sync_params/max_time_difference", config.max_interval_duration, 0.1);  // 100ms from YAML
+        
+        // Bandwidth parameters from synchronizer/bandwidth
+        nh_.param("synchronizer/bandwidth/target_mbps", config.max_bandwidth_mbps, 422.5);  // From YAML
+        config.bandwidth_aware = true;
+        config.bandwidth_threshold = 0.8;  // Drop threshold from YAML
+        
+        // Enable metrics from monitoring section
+        bool enable_metrics = false;
+        nh_.param("monitoring/enable_metrics", enable_metrics, true);
+        config.enable_metrics = enable_metrics;
+        
+        double log_interval = 1.0;
+        nh_.param("monitoring/log_interval", log_interval, 1.0);
+        config.metrics_publish_rate = log_interval;
+        
+        ROS_INFO("HybridSynchronizer config loaded from ROS parameters:");
+        ROS_INFO("  queue_size: %d", config.queue_size);
+        ROS_INFO("  max_time_difference: %.3f s", config.max_interval_duration);
+        ROS_INFO("  max_bandwidth_mbps: %.1f", config.max_bandwidth_mbps);
+        ROS_INFO("  bandwidth_aware: %s", config.bandwidth_aware ? "enabled" : "disabled");
+        ROS_INFO("  enable_metrics: %s", config.enable_metrics ? "enabled" : "disabled");
+        
+        return config;
     }
     
     void onConnectionStatus(bool connected) {
@@ -201,40 +285,73 @@ private:
     }
     
     void onSensorData(const SensorDataPacket& packet) {
-        // Send sensor data to server
-        if (comm_manager_->isConnected()) {
-            if (!comm_manager_->sendSensorData(packet)) {
-                ROS_WARN_THROTTLE(1.0, "Failed to send sensor data packet");
-            }
+        // PRODUCER: Non-blocking enqueue to transfer queue
+        if (!data_queue_->enqueue(packet)) {
+            ROS_WARN_THROTTLE(5.0, "Producer queue full, packet dropped");
         }
-        
+
         // Print periodic stats
         static auto last_print = std::chrono::steady_clock::now();
         auto now = std::chrono::steady_clock::now();
-        if (now - last_print > std::chrono::seconds(5)) {
+        if (now - last_print > std::chrono::seconds(10)) {
             printStatistics();
             last_print = now;
         }
     }
     
     void printStatistics() {
-        if (!synchronizer_ || !comm_manager_) return;
+        if (!synchronizer_ || !comm_manager_ || !data_queue_) return;
         
         auto sync_stats = synchronizer_->getMetrics();
         auto comm_stats = comm_manager_->getStatistics();
+        auto queue_metrics = data_queue_->getMetrics();
         
-        ROS_INFO("=== Statistics ===");
+        ROS_INFO("=== Producer-Consumer Statistics ===");
         ROS_INFO("Sync: synchronized=%lu, dropped=%lu, rate=%.1f%%, latency=%.1f ms",
                  sync_stats.packets_synchronized,
                  sync_stats.packets_dropped,
                  sync_stats.sync_success_rate * 100.0,
                  sync_stats.average_sync_latency_ms);
         
+        ROS_INFO("Queue: enqueued=%lu, dequeued=%lu, dropped=%lu, current_size=%zu, peak_size=%zu",
+                 queue_metrics.packets_enqueued.load(),
+                 queue_metrics.packets_dequeued.load(),
+                 queue_metrics.packets_dropped.load(),
+                 queue_metrics.current_size.load(),
+                 queue_metrics.peak_size.load());
+        
+        ROS_INFO("Queue Perf: drop_rate=%.2f%%, throughput=%.1f Hz",
+                 queue_metrics.getDropRate() * 100.0,
+                 queue_metrics.getThroughputHz());
+        
         ROS_INFO("BW: current=%.1f Mbps, comm sent=%lu packets (%.1f MB), latency=%.1f ms",
                  sync_stats.current_bandwidth_mbps,
                  comm_stats.packets_sent,
                  comm_stats.bytes_sent / (1024.0 * 1024.0),
                  comm_stats.average_latency_ms);
+    }
+
+    // CONSUMER: Network worker thread that processes data from the queue
+    void networkWorkerThread() {
+        ROS_DEBUG("Network worker thread started");
+        SensorDataPacket packet;
+        uint32_t processed_count = 0;
+
+        while (ros::ok()) {
+            // Blocking dequeue with timeout - this isolates network operations
+            if (data_queue_->dequeue(packet, std::chrono::milliseconds(100))) {
+                processed_count++;
+
+                // Network operations isolated in consumer thread
+                if (comm_manager_->isConnected()) {
+                    if (!comm_manager_->sendSensorData(packet)) {
+                        ROS_WARN_THROTTLE(5.0, "Failed to send sensor data via TCP");
+                    }
+                }
+            }
+        }
+
+        ROS_INFO("Network worker thread exiting, processed %u packets", processed_count);
     }
 };
 

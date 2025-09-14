@@ -1,0 +1,72 @@
+# UrbanLoco Dataset Configuration for HybridSynchronizer
+synchronizer:
+  # Topic mappings for real-time sensor simulation (dataset wrapped)  
+  topics:
+    lidar: "/sensors/lidar_realtime"
+    imu: "/sensors/imu_realtime"
+    gnss: "/sensors/gnss_realtime"
+    camera: "/sensors/camera_realtime"
+  
+  # Synchronization parameters optimized for UrbanLoco data rates
+  sync_params:
+    queue_size: 10
+    approximate_time_sync: true
+    max_time_difference: 0.1  # 100ms tolerance
+  
+  # Bandwidth management for CA dataset performance
+  bandwidth:
+    target_mbps: 422.5
+    priority_levels:
+      lidar: 1      # Highest priority (2,439 msgs in 248s = ~10 Hz)
+      camera: 2     # Second priority (2,487 msgs = ~10 Hz)
+      gnss: 3       # Third priority (4,638 msgs = ~18.7 Hz)  
+      imu: 4        # Fourth priority (24,865 msgs = ~100 Hz)
+    
+    compression:
+      enabled: true
+      level: 6
+      
+    dropping_policy:
+      enabled: true
+      drop_threshold: 0.8  # Drop when bandwidth > 80%
+      
+# Performance monitoring configuration
+monitoring:
+  enable_metrics: true
+  metrics_topic: "/performance_metrics"
+  log_interval: 1.0  # Log every second
+  
+# CA Dataset specific parameters  
+dataset:
+  name: "UrbanLoco_CA"
+  expected_duration: 248  # seconds
+  expected_messages: 103322
+  
+  # Message rate expectations (msgs/sec)
+  expected_rates:
+    lidar: 9.8      # 2,439/248
+    imu: 100.3      # 24,865/248  
+    gnss: 18.7      # 4,638/248
+    camera: 10.0    # 2,487/248
+
+# Metrics to collect
+metrics:
+  latency:
+    enabled: true
+    percentiles: [50, 95, 99]
+    
+  throughput:
+    enabled: true
+    window_size: 5.0  # 5-second windows
+    
+  synchronization:
+    enabled: true
+    time_drift_threshold: 0.05  # 50ms
+    
+  bandwidth:
+    enabled: true
+    measurement_interval: 1.0
+    
+  message_loss:
+    enabled: true
+    detection_timeout: 1.0
