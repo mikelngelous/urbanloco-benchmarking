@@ -1,0 +1,11 @@
+datasets/
+*.bag
+*.db3
+.git/
+build/
+devel/
+logs/
+*.log
+*.tmp
+*.swp
+*~

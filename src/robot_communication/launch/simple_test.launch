@@ -1,0 +1,26 @@
+<!-- Simple test launch file without machine configurations -->
+<launch>
+  <!-- Load UrbanLoco configuration -->
+  <rosparam file="$(find robot_communication)/config/urbanloco_config.yaml" command="load" />
+  
+  <!-- Robot Data Publisher Node (our HybridSynchronizer) -->
+  <node name="robot_data_publisher" 
+        pkg="robot_communication" 
+        type="robot_data_publisher" 
+        output="screen"
+        respawn="false">
+    
+    <!-- Topic remapping for UrbanLoco dataset -->
+    <remap from="/sensor/lidar" to="/rslidar_points" />
+    <remap from="/sensor/imu" to="/imu_raw" />
+    <remap from="/sensor/gnss" to="/navsat/fix" />
+    <remap from="/sensor/camera" to="/camera_array/cam0/image_raw/compressed" />
+    
+    <!-- Output topic for synchronized data -->
+    <remap from="/robot_data" to="/synchronized_urbanloco_data" />
+    
+    <!-- Enable performance logging -->
+    <param name="enable_performance_logging" value="true" />
+  </node>
+
+</launch>

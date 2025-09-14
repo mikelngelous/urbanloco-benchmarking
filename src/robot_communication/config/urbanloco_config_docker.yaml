@@ -1,0 +1,73 @@
+# UrbanLoco Dataset Configuration for HybridSynchronizer - Docker Version
+# ESSENTIAL PARAMETERS ONLY - Maintains full functionality with used parameters
+
+# IMPORTANT: Docker-specific communication configuration
+# Used by: CommunicationManager for container networking
+communication:
+  server:
+    host: "mission_server"  # Mission server container name
+    port: 8080
+  client:
+    threads: 4
+    compression: true
+    monitoring: true
+
+synchronizer:
+  # CRITICAL: Topic mappings for real-time sensor simulation (dataset wrapped)
+  # Used by: hybrid_synchronizer.cpp:140-148
+  topics:
+    lidar: "/sensors/lidar_realtime"
+    imu: "/sensors/imu_realtime"
+    gnss: "/sensors/gnss_realtime"
+    camera0: "/sensors/camera0_realtime"
+    camera1: "/sensors/camera1_realtime"
+    camera2: "/sensors/camera2_realtime"
+    camera3: "/sensors/camera3_realtime"
+    camera4: "/sensors/camera4_realtime"
+    camera5: "/sensors/camera5_realtime"
+
+  # CRITICAL: Synchronization parameters optimized for UrbanLoco data rates
+  # Used by: robot_data_publisher.cpp:230-231
+  sync_params:
+    queue_size: 10                    # message_filters queue size
+    max_time_difference: 0.1          # 100ms tolerance for sensor sync
+
+  # CRITICAL: Bandwidth management for CA dataset performance
+  # Used by: robot_data_publisher.cpp:234
+  bandwidth:
+    target_mbps: 422.5                # Target bandwidth based on dataset analysis
+
+# IMPORTANT: Performance monitoring configuration
+# Used by: robot_data_publisher.cpp:240-245
+monitoring:
+  enable_metrics: true                # Enable metrics collection
+  log_interval: 1.0                   # Log metrics every second
+
+# ============================================================================
+# DOCUMENTATION SECTION - Docker deployment characteristics for reference
+# These parameters are NOT used by the code but provide important context
+# ============================================================================
+
+# Docker Container Architecture:
+#   - mission_server: TCP server container (172.22.0.20:8080)
+#   - robot_publisher: Data publisher container (172.22.0.10)
+#   - Static IP networking for reliable container communication
+#   - Multi-camera support (cam0-cam5) for future expansion
+
+# CA Dataset Analysis (for development reference):
+#   - Duration: 248 seconds
+#   - Total messages: 103,322
+#   - Message rates:
+#     * LiDAR: 9.8 Hz (2,439 msgs)
+#     * IMU: 100.3 Hz (24,865 msgs)
+#     * GNSS: 18.7 Hz (4,638 msgs)
+#     * Camera0: 10.0 Hz (2,487 msgs) - only cam0 has data in CA dataset
+#   - Bandwidth requirements: 422.5 Mbps target
+#   - Optimal sync tolerance: 100ms for multi-modal alignment
+
+# System Architecture Notes:
+#   - ApproximateTime synchronization policy (hardcoded in C++)
+#   - Priority-based dropping (not implemented yet)
+#   - Compression settings use communication/compression namespace
+#   - Detailed metrics configuration planned for future implementation
+#   - Docker networking uses container names for service discovery
