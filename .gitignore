@@ -21,3 +21,10 @@ scripts/*
 .catkin_workspace
 
 *.pdf
+
+# network log
+*.pcap
+
+*.md
+*.json
+!README.md

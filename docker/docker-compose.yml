@@ -1,28 +1,77 @@
+# Robot Communication System with UrbanLoco Datasets
+# Data Pipeline: rosbag → timestamp_wrapper → robot_publisher → mission_server
 version: '3.8'
 
 services:
-  # Development environment
-  robot_communication_dev:
+  # ROS Master - Core coordination service
+  roscore:
+    image: ros:noetic
+    container_name: roscore
+    environment:
+      - ROS_MASTER_URI=http://roscore:11311
+      - ROS_HOSTNAME=roscore
+    networks:
+      ros_network:
+        ipv4_address: 172.22.0.10
+    command: roscore
+    restart: unless-stopped
+
+  # Mission Server
+  mission_server:
     build:
       context: ..
       dockerfile: docker/Dockerfile
-      target: dev
-    container_name: robot_communication_dev
+      target: prod
+    container_name: mission_server
     volumes:
-      - ../src:/catkin_ws/src:rw
-      - ../datasets:/catkin_ws/datasets:ro
-      - ../scripts:/catkin_ws/scripts:rw
-      - /tmp/.X11-unix:/tmp/.X11-unix:rw
+      - ../src/robot_communication/config:/catkin_ws/config:ro
     environment:
-      - DISPLAY=${DISPLAY}
-      - ROS_MASTER_URI=http://localhost:11311
-      - ROS_HOSTNAME=localhost
-    network_mode: "host"
-    stdin_open: true
-    tty: true
-    command: bash
+      - ROS_MASTER_URI=http://roscore:11311
+      - ROS_HOSTNAME=mission_server
+    ports:
+      - "8080:8080"
+    depends_on:
+      - roscore
+    networks:
+      ros_network:
+        ipv4_address: 172.22.0.20
+    command: >
+      bash -c "
+      sleep 5 &&
+      source /opt/ros/noetic/setup.bash &&
+      source /catkin_ws/devel/setup.bash &&
+      /catkin_ws/devel/lib/robot_communication/mission_server
+      "
+    restart: unless-stopped
 
-  # Robot data publisher service
+  # Real-time Timestamp Wrapper - Converts dataset timestamps to real-time, UrbanLoco has 2019 timestamps
+  timestamp_wrapper:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+      target: prod
+    container_name: timestamp_wrapper
+    volumes:
+      - ../realtime_timestamp_wrapper.py:/catkin_ws/realtime_timestamp_wrapper.py:ro
+      - ../src/robot_communication/config:/catkin_ws/config:ro
+    environment:
+      - ROS_MASTER_URI=http://roscore:11311
+      - ROS_HOSTNAME=timestamp_wrapper
+      - PYTHONUNBUFFERED=1
+    depends_on:
+      - roscore
+    networks:
+      ros_network:
+        ipv4_address: 172.22.0.30
+    command: >
+      bash -c "
+      sleep 8 &&
+      source /opt/ros/noetic/setup.bash &&
+      python3 /catkin_ws/realtime_timestamp_wrapper.py
+      "
+    restart: unless-stopped
+
+  # Robot Data Publisher Node
   robot_publisher:
     build:
       context: ..
@@ -31,84 +80,101 @@ services:
     container_name: robot_publisher
     volumes:
       - ../datasets:/catkin_ws/datasets:ro
-      - ../config:/catkin_ws/config:ro
+      - ../src/robot_communication/config:/catkin_ws/config:ro
     environment:
       - ROS_MASTER_URI=http://roscore:11311
       - ROS_HOSTNAME=robot_publisher
     depends_on:
       - roscore
+      - mission_server
+      - timestamp_wrapper
     networks:
-      - ros_network
-    command: roslaunch robot_communication robot_communication.launch
+      ros_network:
+        ipv4_address: 172.22.0.40
+    command: >
+      bash -c "
+      sleep 12 &&
+      source /opt/ros/noetic/setup.bash &&
+      source /catkin_ws/devel/setup.bash &&
+      rosparam load /catkin_ws/config/urbanloco_config_docker.yaml &&
+      rosparam set /robot_data_publisher/communication/server/host 172.22.0.20 &&
+      rosparam set /robot_data_publisher/communication/server/port 8080 &&
+      /catkin_ws/devel/lib/robot_communication/robot_data_publisher
+      "
+    restart: unless-stopped
 
-  # Mission server
-  mission_server:
-    build:
-      context: ..
-      dockerfile: docker/Dockerfile
-      target: prod
-    container_name: mission_server
-    volumes:
-      - ../config:/catkin_ws/config:ro
-    environment:
-      - ROS_MASTER_URI=http://roscore:11311
-      - ROS_HOSTNAME=mission_server
-    ports:
-      - "8081:8080"  # TCP server port
-    depends_on:
-      - roscore
-    networks:
-      - ros_network
-    command: rosrun robot_communication mission_server
-
-  # ROS Master
-  roscore:
+  # Dataset Playback - UrbanLoco dataset simulation (continuous loop)
+  rosbag_player:
     image: ros:noetic
-    container_name: roscore
-    environment:
-      - ROS_MASTER_URI=http://roscore:11311
-      - ROS_HOSTNAME=roscore
-    networks:
-      - ros_network
-    command: roscore
-
-  # Monitoring and visualization
-  rqt:
-    image: ros:noetic-desktop
-    container_name: rqt
-    environment:
-      - DISPLAY=${DISPLAY}
-      - ROS_MASTER_URI=http://roscore:11311
-      - ROS_HOSTNAME=rqt
+    container_name: rosbag_player
     volumes:
-      - /tmp/.X11-unix:/tmp/.X11-unix:rw
-    networks:
-      - ros_network
+      - ../datasets:/datasets:ro
+    environment:
+      - ROS_MASTER_URI=http://roscore:11311
+      - ROS_HOSTNAME=rosbag_player
     depends_on:
       - roscore
-    command: rqt
-    profiles:
-      - monitoring
+      - timestamp_wrapper
+    networks:
+      ros_network:
+        ipv4_address: 172.22.0.50
+    command: >
+      bash -c "
+      sleep 15 &&
+      source /opt/ros/noetic/setup.bash &&
+      while true; do
+        rosbag play /datasets/CA/CA-20190828184706_blur_align-002.bag --rate=1.0 --duration=30 --clock
+        sleep 2
+      done
+      "
+    restart: unless-stopped
 
-  # RViz for visualization
+  # RViz LiDAR visualization
   rviz:
-    image: ros:noetic-desktop
+    image: osrf/ros:noetic-desktop-full
     container_name: rviz
     environment:
       - DISPLAY=${DISPLAY}
       - ROS_MASTER_URI=http://roscore:11311
       - ROS_HOSTNAME=rviz
+      - LIBGL_ALWAYS_SOFTWARE=1
+      - QT_X11_NO_MITSHM=1
+      - XDG_RUNTIME_DIR=/tmp/runtime-rviz
     volumes:
       - /tmp/.X11-unix:/tmp/.X11-unix:rw
-      - ../config/rviz:/root/.rviz:rw
-    networks:
-      - ros_network
+      - ../config:/catkin_ws/config:ro
     depends_on:
       - roscore
-    command: rviz
+      - robot_publisher
+    networks:
+      ros_network:
+        ipv4_address: 172.22.0.60
+    command: >
+      bash -c "
+      mkdir -p /tmp/runtime-rviz &&
+      sleep 20 &&
+      source /opt/ros/noetic/setup.bash &&
+      rviz -d /catkin_ws/config/lidar_simple_visualization.rviz 2>/dev/null || (
+        echo 'RViz GUI failed to start, container running for monitoring' &&
+        tail -f /dev/null
+      )
+      "
     profiles:
       - visualization
 
+# Static Network Configuration
 networks:
   ros_network:
     driver: bridge
+    ipam:
+      config:
+        - subnet: 172.22.0.0/24
+          gateway: 172.22.0.1
+
+# Service IP Allocation:
+# roscore:           172.22.0.10  # ROS Master
+# mission_server:    172.22.0.20  # TCP Server (port 8080)
+# timestamp_wrapper: 172.22.0.30  # Real-time converter
+# robot_publisher:   172.22.0.40  # Data publisher
+# rosbag_player:     172.22.0.50  # Dataset simulation
+# rviz:              172.22.0.60  # LiDAR visualization
