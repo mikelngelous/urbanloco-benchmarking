@@ -56,6 +56,26 @@ The UrbanLoco dataset represents a high-throughput scenario. To manage this, a p
 *   **Synchronization:** The core logic is built around `message_filters::sync_policies::ApproximateTime`, which is configured with a queue size and a time window appropriate for the sensors.
 *   **Communication Protocol:** A custom TCP protocol is used, where each message is prefixed with a 4-byte length header. Protobuf is used for serialization, offering a compact and efficient binary format.
 
+#### Data Formats
+
+The system utilizes two distinct message formats for different stages of the pipeline: a flexible ROS message for internal wrapping and a highly-efficient Protobuf message for external communication.
+
+*   **`SensorPacket.msg` (Internal ROS Wrapper)**
+    This is a generic ROS message used for basic data transport within the ROS ecosystem. It acts as a simple container with a header, a data type identifier, a sequence ID, and a raw `uint8[]` payload. It's primarily used by helper nodes like the `timestamp_wrapper` before the data is processed into its final, structured format.
+    ```
+    Header header
+    string data_type
+    uint64 sequence_id
+    uint8[] payload
+    ```
+
+*   **`sensor_data.proto` (External Communication Packet)**
+    This is the core data structure for the synchronized multi-sensor payload that is sent to the server. Defined using Protocol Buffers, this format provides a language-agnostic, schema-enforced, and highly compact binary representation of the data. This is crucial for minimizing network bandwidth and ensuring robust communication. The `.proto` file defines a `SensorDataPacket` that contains dedicated fields for each sensor type, such as:
+    *   `LidarData`
+    *   `ImuData`
+    *   `GnssData`
+    *   A `repeated` field for `CameraData` to include multiple camera images.
+
 ## Performance Validation
 
 The system was validated against two distinct, complex scenarios from the UrbanLoco dataset to test its consistency and robustness: **CA-002** (248s duration) and **CA-005** (253s duration). The tests were run in a native deployment environment to measure optimal performance.
